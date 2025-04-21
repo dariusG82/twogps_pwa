@@ -1,105 +1,126 @@
 <!DOCTYPE html>
 <html lang="lt">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#ffffff">
-    <link rel="manifest" href="manifest.json">
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <title>Kelionės maršrutas</title>
-    <style>
-        body { margin: 0; font-family: sans-serif; }
-        #map {
-            height: 90vh;
-            width: 100%;
-        }
-        header {
-            padding: 1rem;
-            background: #1976d2;
-            color: white;
-            text-align: center;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#ffffff">
+  <link rel="manifest" href="manifest.json">
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <title>Kelionės maršrutas</title>
+  <style>
+    body { margin: 0; font-family: sans-serif; }
+    #map { height: 90vh; width: 100%; }
+    header { padding: 1rem; background: #1976d2; color: white; text-align: center; }
+  </style>
 </head>
 <body>
-    <header>
-        <h2>Maršrutas: Marijampolė – Kaunas (50 taškų iš Google Sheets)</h2>
-    </header>
-    <div id="map"></div>
+  <header>
+    <h2>Maršrutai: GPS1 &amp; GPS2 (50 taškų iš Google Sheets)</h2>
+  </header>
+  <div id="map"></div>
 
-    <script>
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('service-worker.js')
-                .then(reg => console.log('Service Worker registered', reg))
-                .catch(err => console.error('Service Worker registration failed', err));
+  <script>
+    // Service Worker (neprivaloma)
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('service-worker.js')
+        .then(reg => console.log('SW registered', reg))
+        .catch(err => console.error('SW registration failed', err));
+    }
+
+    // 1. Nurodom Google Sheets CSV URL’us kiekvienam GPS:
+    const gpsFeeds = {
+      'GPS1': 'https://docs.google.com/spreadsheets/d/…/pub?gid=GID1&single=true&output=csv',
+      'GPS2': 'https://docs.google.com/spreadsheets/d/…/pub?gid=GID2&single=true&output=csv'
+    };
+
+    // 2. Spalvos linijoms ir žymėms
+    const lineColors   = { 'GPS1': 'blue',   'GPS2': 'green'  };
+    const markerColors = { 'GPS1': 'red',    'GPS2': 'orange' };
+
+    let map;
+    let routeLines = {};   // saugos L.Polyline objektus pagal GPS pavadinimą
+    let markers    = {};   // saugos masyvą L.CircleMarker objektų pagal GPS
+
+    async function loadMapData() {
+      try {
+        const results = await Promise.all(
+          Object.entries(gpsFeeds).map(async ([gpsName, baseUrl]) => {
+            // pridedam cache-busting parametrą
+            const url = `${baseUrl}&t=${Date.now()}`;
+            const res = await fetch(url, { cache: 'no-cache' });
+            const text = await res.text();
+            return { gpsName, text };
+          })
+        );
+
+        const allBounds = [];
+
+        for (let {gpsName, text} of results) {
+          const rows = text.trim().split('\n').slice(1);
+          const coords = rows
+            .map(r => {
+              const [ts, latStr, lonStr] = r.split(',');
+              const lat = parseFloat(latStr.replace(/"/g,''));
+              const lon = parseFloat(lonStr.replace(/"/g,''));
+              return [lat, lon];
+            })
+            .filter(c => !isNaN(c[0]) && !isNaN(c[1]));
+
+          // Inicijuojam žemėlapį pirmą kartą
+          if (!map && coords.length) {
+            map = L.map('map').setView(coords[0], 9);
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+              attribution: '&copy; OpenStreetMap contributors'
+            }).addTo(map);
+          }
+
+          // Remove senus sluoksnius
+          if (routeLines[gpsName]) {
+            map.removeLayer(routeLines[gpsName]);
+          }
+          (markers[gpsName] || []).forEach(m => map.removeLayer(m));
+
+          // Nauja polilinija
+          routeLines[gpsName] = L.polyline(coords, {
+            color:      lineColors[gpsName]   || 'black',
+            weight:     4,
+            opacity:    0.7
+          }).addTo(map);
+
+          // Naujos žymės
+          markers[gpsName] = coords.map((c, i) => {
+            return L.circleMarker(c, {
+              radius:     4,
+              fillColor:  markerColors[gpsName] || 'black',
+              color:      '#000',
+              weight:     1,
+              fillOpacity:0.8
+            })
+            .addTo(map)
+            .bindTooltip(`${gpsName} taškas ${i+1}`);
+          });
+
+          allBounds.push(routeLines[gpsName].getBounds());
         }
 
-        const csvBaseUrl = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRMpwq9Aoi39nCpHCBSiK4VMIMLLUlbxkRQTM3EzC8BzmqpwvUfRUns9f9iKFo6V9lDNCHyJ2VEP0KX/pub?output=csv";
-        let map;
-        let routeLine;
-        let markers = [];
-
-        async function loadMapData() {
-            try {
-                const csvUrl = `${csvBaseUrl}&t=${Date.now()}`;
-                const response = await fetch(csvUrl, { cache: "no-cache" });
-                const text = await response.text();
-
-                const rows = text.trim().split('\n').slice(1);
-                const coordinates = [];
-
-                rows.forEach(row => {
-                    const cols = row.split(',');
-                    const lat = parseFloat(cols[1]?.trim().replace(/"/g, ''));
-                    const lon = parseFloat(cols[2]?.trim().replace(/"/g, ''));
-                    if (!isNaN(lat) && !isNaN(lon)) {
-                        coordinates.push([lat, lon]);
-                    }
-                });
-
-                if (coordinates.length === 0) {
-                    console.error("Nėra galiojančių koordinačių!");
-                    return;
-                }
-
-                if (!map) {
-                    map = L.map('map').setView(coordinates[0], 9);
-
-                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                        attribution: '&copy; OpenStreetMap contributors'
-                    }).addTo(map);
-                }
-
-                if (routeLine) {
-                    map.removeLayer(routeLine);
-                    routeLine = null;
-                }
-                markers.forEach(m => map.removeLayer(m));
-                markers = [];
-
-                routeLine = L.polyline(coordinates, { color: 'blue' }).addTo(map);
-
-                coordinates.forEach((coord, i) => {
-                    const marker = L.circleMarker(coord, {
-                        radius: 4,
-                        fillColor: 'red',
-                        color: 'black',
-                        weight: 1,
-                        fillOpacity: 0.8
-                    }).addTo(map).bindTooltip(`Taškas ${i + 1}`);
-                    markers.push(marker);
-                });
-
-                map.fitBounds(routeLine.getBounds());
-
-            } catch (error) {
-                console.error("Klaida kraunant duomenis:", error);
-            }
+        // Pradėtam vaizdą, apimant visus GPS
+        if (allBounds.length) {
+          const combined = allBounds.reduce((acc, b) => acc.extend(b), L.latLngBounds());
+          map.fitBounds(combined.pad(0.1));
         }
 
-        loadMapData();
-        setInterval(loadMapData, 15000); // atnaujinimas kas 15 sekundžių
-    </script>
+      } catch (err) {
+        console.error('Klaida kraunant GPS duomenis:', err);
+      }
+    }
+
+    // Pirmas užkrovimas ir periodinis atnaujinimas
+    loadMapData();
+    setInterval(loadMapData, 15000);
+  </script>
 </body>
 </html>
