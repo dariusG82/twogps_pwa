@@ -2,59 +2,107 @@
 <html lang="lt">
 <head>
   <meta charset="UTF-8"/>
-  <title>GPS1 & GPS2 maršrutai</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-  <style>html,body,#map{height:100%;margin:0;padding:0;}</style>
+  <title>GPS1 & GPS2 maršrutai (JSON)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <!-- Leaflet CSS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+  <style>
+    html, body, #map { height: 100%; margin: 0; padding: 0; }
+  </style>
 </head>
 <body>
   <div id="map"></div>
+
+  <!-- Leaflet JS -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
   document.addEventListener('DOMContentLoaded', () => {
-    // 1) Pakeiskite šiame URL į savo Apps Script Web App URL:
-    const DATA_URL = 'https://script.google.com/macros/s/AKfycbyVzoVMSoAcjpOOIQ8NT4Sbn9WiboN0S5SFWQU3-Wsd4oCeBDSireNbKjtDYJcktDDsBA/exec';
-    const REFRESH_MS = 15000;
+    // ◉ Pakeiskite šį URL į savo Apps Script Web App "exec" URL
+    const DATA_URL   = 'https://script.google.com/macros/s/XXXX/exec';
+    const REFRESH_MS = 15000;  // atnaujinimas kas 15 s
 
-    // 2) Init žemėlapio
+    // 1) Init žemėlapis
     const map = L.map('map', {
       minZoom: 3,
-      maxBounds: [[-90,-180],[90,180]]
-    }).setView([55,24], 8);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
-      attribution:'&copy; OpenStreetMap contributors',
-      noWrap:true
+      maxBounds: [[-90, -180], [90, 180]]
+    }).setView([55.0, 24.0], 8);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors',
+      noWrap: true
     }).addTo(map);
 
-    // 3) Sukuriame du polyline – tik vieną kartą
-    const poly1 = L.polyline([], {color:'blue',weight:4}).addTo(map);
-    const poly2 = L.polyline([], {color:'green',weight:4}).addTo(map);
+    // 2) Vieną kartą sukuriame dvi polilines
+    const poly1 = L.polyline([], { color: 'blue',  weight: 4 }).addTo(map);
+    const poly2 = L.polyline([], { color: 'green', weight: 4 }).addTo(map);
 
-    // 4) Fetch real‑time JSON
+    // 3) Saugojame marker’ius, kad galėtume juos keisti
+    let startMarkers = { gps1: null, gps2: null };
+    let endMarkers   = { gps1: null, gps2: null };
+
+    // 4) Gauname JSON iš Apps Script
     async function fetchData() {
-      const res = await fetch(DATA_URL + '?t=' + Date.now(), { cache:'no-store' });
-      if (!res.ok) throw new Error(res.statusText);
-      return await res.json();  // {gps1:[[lat,lon],…], gps2:…}
+      const res = await fetch(DATA_URL + '?t=' + Date.now(), {
+        cache: 'no-store'
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json(); // { gps1: [[lat,lon],…], gps2: [[lat,lon],…] }
     }
 
-    // 5) Atnaujiname maršrutus
-    async function update() {
+    // 5) Atnaujinimo funkcija
+    async function updateRoutes() {
       try {
         const data = await fetchData();
-        poly1.setLatLngs(data.gps1);
-        poly2.setLatLngs(data.gps2);
-        const all = data.gps1.concat(data.gps2);
-        if (all.length) {
-          map.fitBounds(L.latLngBounds(all), { maxZoom:12, padding:[20,20] });
+        const coords1 = data.gps1.slice(-50);
+        const coords2 = data.gps2.slice(-50);
+
+        // 5.1 atnaujinam polilines
+        poly1.setLatLngs(coords1);
+        poly2.setLatLngs(coords2);
+
+        // 5.2 pašalinam senus marker’ius
+        ['gps1','gps2'].forEach(key => {
+          if (startMarkers[key]) map.removeLayer(startMarkers[key]);
+          if (endMarkers[key])   map.removeLayer(endMarkers[key]);
+        });
+
+        // 5.3 sukuriame naujus "Nuo" ir "Dabar" marker’ius
+        if (coords1.length) {
+          startMarkers.gps1 = L.marker(coords1[0])
+            .addTo(map)
+            .bindTooltip('Nuo', { permanent: true, direction: 'right' });
+          endMarkers.gps1   = L.marker(coords1[coords1.length - 1])
+            .addTo(map)
+            .bindTooltip('Dabar', { permanent: true, direction: 'right' });
         }
-      } catch(e) {
-        console.error('Klaida:', e);
+        if (coords2.length) {
+          startMarkers.gps2 = L.marker(coords2[0])
+            .addTo(map)
+            .bindTooltip('Nuo', { permanent: true, direction: 'left' });
+          endMarkers.gps2   = L.marker(coords2[coords2.length - 1])
+            .addTo(map)
+            .bindTooltip('Dabar', { permanent: true, direction: 'left' });
+        }
+
+        // 5.4 sutampančios ribos ir priartinimas
+        const all = coords1.concat(coords2);
+        if (all.length) {
+          map.fitBounds(L.latLngBounds(all), {
+            padding: [20,20],
+            maxZoom: 12
+          });
+        }
+      } catch (err) {
+        console.error('Klaida gaunant JSON duomenis:', err);
       }
     }
 
-    // 6) Pirmas paleidimas + intervalas
-    update();
-    setInterval(update, REFRESH_MS);
+    // 6) Start + intervalas
+    updateRoutes();
+    setInterval(updateRoutes, REFRESH_MS);
   });
   </script>
 </body>
