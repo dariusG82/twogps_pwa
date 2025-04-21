@@ -23,14 +23,12 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
     document.addEventListener('DOMContentLoaded', () => {
-      // jūsų publikuotų sheet’ų CSV nuorodos:
       const CSV_GPS1 = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQLeQeN75y60DLI159llAcz32CYiN0gvFuW5hErLrqp_b2OB5uuaDEfB7CaJFoIOmeuh3dpU9ALeaqc/pub?gid=0&single=true&output=csv';
       const CSV_GPS2 = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQLeQeN75y60DLI159llAcz32CYiN0gvFuW5hErLrqp_b2OB5uuaDEfB7CaJFoIOmeuh3dpU9ALeaqc/pub?gid=1682085561&single=true&output=csv';
+      const MAX_ROWS   = 50;
+      const REFRESH_MS = 15000;
 
-      const MAX_ROWS   = 50;      // tik paskutinės 50 eilučių
-      const REFRESH_MS = 15000;   // kas 15 s
-
-      // iniciuojam žemėlapį
+      // Initialize map
       const map = L.map('map').setView([0, 0], 2);
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '&copy; OpenStreetMap contributors'
@@ -39,27 +37,29 @@
       const poly1 = L.polyline([], { color: 'blue' }).addTo(map);
       const poly2 = L.polyline([], { color: 'green' }).addTo(map);
 
-      // parse CSV į [lat,lon]
+      // Robust parser: nulupa kabutes, tada parseFloat
       function parseCSV(text) {
         return text
           .trim()
           .split('\n')
-          .slice(1)
-          .map(r => r.split(','))
-          .map(c => [parseFloat(c[1]), parseFloat(c[2])])
-          .filter(p => !isNaN(p[0]) && !isNaN(p[1]))
+          .slice(1) // praleidžiam header
+          .map(line =>
+            line
+              .split(',')
+              .map(cell => cell.replace(/^"|"$/g, '').trim())
+          )
+          .map(cols => [parseFloat(cols[1]), parseFloat(cols[2])])
+          .filter(([lat, lon]) => !isNaN(lat) && !isNaN(lon))
           .slice(-MAX_ROWS);
       }
 
-      // fetch + parse vieno sheet’o
       async function fetchCoords(url) {
         const res = await fetch(url + '&t=' + Date.now(), { cache: 'no-cache' });
-        if (!res.ok) throw new Error(res.statusText);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const txt = await res.text();
         return parseCSV(txt);
       }
 
-      // atnaujinimo funkcija
       async function updateRoutes() {
         try {
           const [c1, c2] = await Promise.all([
