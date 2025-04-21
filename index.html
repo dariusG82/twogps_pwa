@@ -3,9 +3,8 @@
 <head>
   <meta charset="UTF-8"/>
   <title>GPS1 & GPS2 maršrutai</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-  <!-- Leaflet CSS (be SRI) -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <!-- Leaflet CSS (be integrity/crossorigin) -->
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -21,20 +20,21 @@
 <body>
   <div id="map"></div>
 
-  <!-- Leaflet JS (be SRI) -->
+  <!-- Leaflet JS (be integrity/crossorigin) -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
   document.addEventListener('DOMContentLoaded', () => {
-    // 1) PDF CSV nuorodos
-    const CSV_GPS1 = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQLeQeN75y60DLI159llAcz32CYiN0gvFuW5hErLrqp_b2OB5uuaDEfB7CaJFoIOmeuh3dpU9ALeaqc/pub?gid=0&single=true&output=csv';
-    const CSV_GPS2 = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQLeQeN75y60DLI159llAcz32CYiN0gvFuW5hErLrqp_b2OB5uuaDEfB7CaJFoIOmeuh3dpU9ALeaqc/pub?gid=1682085561&single=true&output=csv';
+    // 1) Google Sheets publikuoti CSV URL'ai
+    const SHEET_ID = '2PACX-1vQLeQeN75y60DLI159llAcz32CYiN0gvFuW5hErLrqp_b2OB5uuaDEfB7CaJFoIOmeuh3dpU9ALeaqc';
+    const CSV_GPS1 = `https://docs.google.com/spreadsheets/d/e/${SHEET_ID}/pub?gid=0&single=true&output=csv`;
+    const CSV_GPS2 = `https://docs.google.com/spreadsheets/d/e/${SHEET_ID}/pub?gid=1682085561&single=true&output=csv`;
     const MAX_ROWS   = 50;
     const REFRESH_MS = 15000;
 
-    // 2) Init map su minZoom, noWrap ir maxBounds
+    // 2) Inicializuojame žemėlapį
     const map = L.map('map', {
-      minZoom: 3,                    // neleis zoom'inti žemyn žemiau 3
-      maxBounds: [[-90,-180],[90,180]]  // nepertraukti vertikalių ribų
+      minZoom: 3,
+      maxBounds: [[-90, -180], [90, 180]]
     }).setView([55.0, 23.5], 8);
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -42,58 +42,61 @@
       noWrap: true
     }).addTo(map);
 
-    // 3) Sukuriame vieną kartą polyline'us
-    const poly1 = L.polyline([], { color: 'blue' }).addTo(map);
-    const poly2 = L.polyline([], { color: 'green' }).addTo(map);
+    // 3) Sukuriame polilines – tik vieną kartą
+    const poly1 = L.polyline([], { color: 'blue', weight: 4 }).addTo(map);   // GPS1
+    const poly2 = L.polyline([], { color: 'green', weight: 4 }).addTo(map);  // GPS2
 
-    // 4) Parsinimo funkcija
+    // 4) Robustus CSV parseris:
+    //    - randa visus 4 quotintus laukus kiekvienoje eilutėje
+    //    - paverčia "54,54722" į 54.54722
     function parseCSV(text) {
       return text
         .trim()
         .split('\n')
-        .slice(1)
-        .map(line =>
-          line.split(',').map(cell => cell.replace(/^"|"$/g,'').trim())
-        )
-        .map(cols => [ parseFloat(cols[1]), parseFloat(cols[2]) ])
-        .filter(([lat,lon]) => !isNaN(lat) && !isNaN(lon))
+        .slice(1) // praleidžiame header
+        .map(line => {
+          // matchuoja: "TimeStamp","Latitude","Longitude","Gps"
+          const m = line.match(/"([^"]*)","([^"]*)","([^"]*)","([^"]*)"/);
+          if (!m) return null;
+          const lat = parseFloat(m[2].replace(',', '.'));
+          const lon = parseFloat(m[3].replace(',', '.'));
+          return (!isNaN(lat) && !isNaN(lon)) ? [lat, lon] : null;
+        })
+        .filter(pt => pt)
         .slice(-MAX_ROWS);
     }
 
-    // 5) Fetch + parse
+    // 5) Užklausiame CSV ir parse’iname
     async function fetchCoords(url) {
-      const res = await fetch(url + '&t=' + Date.now(), { cache:'no-cache' });
-      if (!res.ok) throw new Error(res.statusText);
+      const res = await fetch(url + '&t=' + Date.now(), { cache: 'no-cache' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const txt = await res.text();
       return parseCSV(txt);
     }
 
-    // 6) At­naujinimo logika
+    // 6) Atnaujinimo funkcija – keičiame tik `.setLatLngs()`
     async function updateRoutes() {
       try {
-        const [c1,c2] = await Promise.all([
+        const [coords1, coords2] = await Promise.all([
           fetchCoords(CSV_GPS1),
           fetchCoords(CSV_GPS2)
         ]);
+        poly1.setLatLngs(coords1);
+        poly2.setLatLngs(coords2);
 
-        // tik atnaujiname koordinates, NIEKUR NEBRAIŽOME NAUJŲ
-        poly1.setLatLngs(c1);
-        poly2.setLatLngs(c2);
-
-        // ir sutankiname per bounds, bet ne mažiau nei zoom:3 ir ne daugiau nei zoom:12
-        const all = c1.concat(c2);
+        const all = coords1.concat(coords2);
         if (all.length) {
-          map.fitBounds(L.latLngBounds(all), { 
-            maxZoom: 12,   // nenorime išsilaužt žemyn iki zoom=0
-            padding: [20,20]
+          map.fitBounds(L.latLngBounds(all), {
+            padding: [20, 20],
+            maxZoom: 12
           });
         }
-      } catch (e) {
-        console.error('Klaida kraunant GPS duomenis:', e);
+      } catch (err) {
+        console.error('Klaida kraunant GPS duomenis:', err);
       }
     }
 
-    // 7) Paleidimas ir intervalas
+    // 7) Pirmas paleidimas + intervalas
     updateRoutes();
     setInterval(updateRoutes, REFRESH_MS);
   });
