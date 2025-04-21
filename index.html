@@ -1,23 +1,6 @@
-<!DOCTYPE html>
-<html lang="lt">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Kelionės maršrutai</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <style>
-    body { margin: 0; font-family: sans-serif; }
-    #map { height: 90vh; width: 100%; }
-    header { padding: 1rem; background: #1976d2; color: #fff; text-align: center; }
-  </style>
-</head>
-<body>
-  <header>
-    <h2>Maršrutai: GPS1 &amp; GPS2 (50 taškų iš Google Sheets)</h2>
-  </header>
-  <div id="map"></div>
+  <!-- include this in your <head> -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
     const gpsFeeds = {
       'GPS1': 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQLeQeN75y60DLI159llAcz32CYiN0gvFuW5hErLrqp_b2OB5uuaDEfB7CaJFoIOmeuh3dpU9ALeaqc/pub?gid=0&single=true&output=csv',
@@ -25,67 +8,76 @@
     };
     const lineColors   = { 'GPS1': 'blue',   'GPS2': 'green'  };
     const markerColors = { 'GPS1': 'red',    'GPS2': 'orange' };
-    let map;
-    let routeLines = {};
-    let markers    = {};
+
+    let map, routeLines = {}, markers = {};
 
     async function loadMapData() {
       try {
-        // 1. Parsisiunčiam visus CSV
-        const rawFeeds = await Promise.all(
-          Object.entries(gpsFeeds).map(async ([gpsName, baseUrl]) => {
-            const url = `${baseUrl}&t=${Date.now()}`;
-            const resp = await fetch(url, { cache: 'no-cache' });
-            const text = await resp.text();
-            return { gpsName, text };
-          })
+        // 1) Fetch & parse each CSV
+        const parsed = await Promise.all(
+          Object.entries(gpsFeeds).map(([gpsName, url]) =>
+            new Promise((resolve, reject) => {
+              Papa.parse(url + '&t=' + Date.now(), {
+                download:      true,
+                header:        true,
+                skipEmptyLines:true,
+                complete: ({ data }) => {
+                  // data is an array of {Timestamp, Latitude, Longitude}
+                  console.log(`${gpsName} parsed ${data.length} rows`);
+                  resolve({ gpsName, data });
+                },
+                error: (err) => reject(err)
+              });
+            })
+          )
         );
 
-        // 2. Išskaidom į koordinačių masyvus
-        const parsed = rawFeeds.map(({gpsName, text}) => {
-          const rows = text.trim().split('\n').slice(1);
-          const coords = rows
-            .map(r => {
-              const cols = r.split(',');
-              const lat = parseFloat(cols[1]?.replace(/"/g,''));
-              const lon = parseFloat(cols[2]?.replace(/"/g,''));
-              return (!isNaN(lat)&&!isNaN(lon)) ? [lat, lon] : null;
-            })
-            .filter(c => c);
-          return { gpsName, coords };
-        });
-
-        // 3. Inicijavimas – pirmas ne tuščias coords
+        // 2) Initialize map on first valid point
         if (!map) {
-          const first = parsed.find(p => p.coords.length);
+          const first = parsed.find(p => p.data.length && !isNaN(parseFloat(p.data[0].Latitude)));
           if (!first) {
-            console.warn('Nėra jokių koordinačių map inicijavimui.');
+            console.warn('No valid points yet to initialize map');
             return;
           }
-          map = L.map('map').setView(first.coords[0], 9);
+          const lat0 = parseFloat(first.data[0].Latitude),
+                lng0 = parseFloat(first.data[0].Longitude);
+          map = L.map('map').setView([lat0, lng0], 9);
           L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '&copy; OpenStreetMap contributors'
           }).addTo(map);
         }
 
-        // 4. Braižom kiekvieną GPS
         const allBounds = [];
-        parsed.forEach(({gpsName, coords}) => {
-          // Išvalom senus sluoksnius
-          if (routeLines[gpsName]) map.removeLayer(routeLines[gpsName]);
-          (markers[gpsName] || []).forEach(m => map.removeLayer(m));
 
-          // Jei nėra koordinačių – praleidžiam
+        // 3) For each feed: clear old layers, then draw
+        parsed.forEach(({ gpsName, data }) => {
+          // clean up
+          if (routeLines[gpsName]) map.removeLayer(routeLines[gpsName]);
+          (markers[gpsName]||[]).forEach(m=>map.removeLayer(m));
+
+          // map raw rows to [lat, lng]
+          const coords = data
+            .map(r => {
+              const lat = parseFloat(r.Latitude),
+                    lng = parseFloat(r.Longitude);
+              return (!isNaN(lat) && !isNaN(lng)) ? [lat, lng] : null;
+            })
+            .filter(c => c);
+
+          // nothing to draw?
           if (!coords.length) return;
 
-          // Nauja polilinija
-          routeLines[gpsName] = L.polyline(coords, {
-            color:      lineColors[gpsName]   || 'black',
-            weight:     4,
-            opacity:    0.7
-          }).addTo(map);
+          // if multiple points, draw polyline
+          if (coords.length > 1) {
+            routeLines[gpsName] = L.polyline(coords, {
+              color:   lineColors[gpsName]   || 'black',
+              weight:  4,
+              opacity: 0.7
+            }).addTo(map);
+            allBounds.push(routeLines[gpsName].getBounds());
+          }
 
-          // Žymės
+          // always draw markers (at least one)
           markers[gpsName] = coords.map((c, i) =>
             L.circleMarker(c, {
               radius:      4,
@@ -97,17 +89,15 @@
             .addTo(map)
             .bindTooltip(`${gpsName} taškas ${i+1}`)
           );
-
-          allBounds.push(routeLines[gpsName].getBounds());
         });
 
-        // 5. Centrinti visus sluoksnius
+        // 4) finally, fit map to all lines
         if (allBounds.length) {
           const combined = allBounds.reduce((b, bb) => b.extend(bb), L.latLngBounds());
           map.fitBounds(combined.pad(0.1));
         }
-
-      } catch (err) {
+      }
+      catch (err) {
         console.error('Klaida kraunant GPS duomenis:', err);
       }
     }
@@ -115,5 +105,3 @@
     loadMapData();
     setInterval(loadMapData, 15000);
   </script>
-</body>
-</html>
