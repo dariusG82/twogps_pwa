@@ -5,20 +5,11 @@
   <title>GPS1 & GPS2 maršrutai</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-  <!-- 1) Leaflet CSS -->
+  <!-- Leaflet CSS – be integrity ir crossorigin -->
   <link
     rel="stylesheet"
     href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-    integrity="sha512-xwE/ViTAhUcrvL+0VE3Xy6nOiSvz6Kq1U9B+dr6uBAMRyZlELRLB0NC0Hg3VNNW6tqK1VT4yVU5zW+KQ2O8g=="
-    crossorigin=""
   />
-
-  <!-- 2) Leaflet JS – be defer, kad blokuotų tolimesnį parsing iki užkrovimo -->
-  <script
-    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-    integrity="sha512-gZNPwGx7G3bZUNx74jE7sep4s5+USyrq+4k5e+eNjG+/uT/ZasV0VVZ8YuQ13T9Kep89gR5Jh9G/1JVuJNw8A=="
-    crossorigin=""
-  ></script>
 
   <style>
     html, body, #map {
@@ -31,37 +22,39 @@
 <body>
   <div id="map"></div>
 
-  <!-- 3) Tavo kodas – įvykdomas tik tada, kai DOM ir Leaflet jau įkeltos -->
+  <!-- Leaflet JS – be integrity ir crossorigin -->
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  ></script>
+
   <script>
     document.addEventListener('DOMContentLoaded', () => {
-      // CSV nuorodos
       const CSV_GPS1 = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQLeQeN75y60DLI159llAcz32CYiN0gvFuW5hErLrqp_b2OB5uuaDEfB7CaJFoIOmeuh3dpU9ALeaqc/pub?gid=0&single=true&output=csv';
       const CSV_GPS2 = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQLeQeN75y60DLI159llAcz32CYiN0gvFuW5hErLrqp_b2OB5uuaDEfB7CaJFoIOmeuh3dpU9ALeaqc/pub?gid=1682085561&single=true&output=csv';
       const MAX_ROWS   = 50;
       const REFRESH_MS = 15000;
 
-      // 3.1 Inicijuojame žemėlapį
+      // Inicijuojame žemėlapį
       const map = L.map('map').setView([0, 0], 2);
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '&copy; OpenStreetMap contributors'
       }).addTo(map);
-
       const poly1 = L.polyline([], { color: 'blue' }).addTo(map);
       const poly2 = L.polyline([], { color: 'green' }).addTo(map);
 
-      // 3.2 CSV → [lat,lon]
+      // CSV → [lat, lon]
       function parseCSV(text) {
         return text
           .trim()
           .split('\n')
           .slice(1)
           .map(r => r.split(','))
-          .map(cols => [parseFloat(cols[1]), parseFloat(cols[2])])
-          .filter(pt => !isNaN(pt[0]) && !isNaN(pt[1]))
+          .map(c => [parseFloat(c[1]), parseFloat(c[2])])
+          .filter(p => !isNaN(p[0]) && !isNaN(p[1]))
           .slice(-MAX_ROWS);
       }
 
-      // 3.3 Užklausa ir parse
+      // Užklausa CSV ir parse
       async function fetchCoords(url) {
         const resp = await fetch(url + '&t=' + Date.now(), { cache: 'no-cache' });
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -69,7 +62,7 @@
         return parseCSV(txt);
       }
 
-      // 3.4 Atnaujinimo funkcija
+      // Atnaujiname maršrutus
       async function updateRoutes() {
         try {
           const [c1, c2] = await Promise.all([
@@ -80,12 +73,11 @@
           poly2.setLatLngs(c2);
           const all = c1.concat(c2);
           if (all.length) map.fitBounds(L.latLngBounds(all));
-        } catch (err) {
-          console.error('Klaida kraunant GPS duomenis:', err);
+        } catch (e) {
+          console.error('Klaida kraunant GPS duomenis:', e);
         }
       }
 
-      // 3.5 Paleidžiam
       updateRoutes();
       setInterval(updateRoutes, REFRESH_MS);
     });
