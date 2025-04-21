@@ -1,107 +1,84 @@
-  <!-- include this in your <head> -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+<!DOCTYPE html>
+<html lang="lt">
+<head>
+  <meta charset="UTF-8" />
+  <title>GPS1 & GPS2 maršrutai</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Leaflet CSS -->
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha512-xwE/ViTAhUcrvL+0VE3Xy6nOiSvz6Kq1U9B+dr6uBAMRyZlELRLB0NC0Hg3VNNW6tqK1VT4yVU5zW+KQ2O8g=="
+    crossorigin=""
+  />
+  <style> html, body, #map { height:100%; margin:0; padding:0; } </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <!-- Leaflet JS -->
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha512-gZNPwGx7G3bZUNx74jE7sep4s5+USyrq+4k5e+eNjG+/uT/ZasV0VVZ8YuQ13T9Kep89gR5Jh9G/1JVuJNw8A=="
+    crossorigin=""
+  ></script>
 
   <script>
-    const gpsFeeds = {
-      'GPS1': 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQLeQeN75y60DLI159llAcz32CYiN0gvFuW5hErLrqp_b2OB5uuaDEfB7CaJFoIOmeuh3dpU9ALeaqc/pub?gid=0&single=true&output=csv',
-      'GPS2': 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQLeQeN75y60DLI159llAcz32CYiN0gvFuW5hErLrqp_b2OB5uuaDEfB7CaJFoIOmeuh3dpU9ALeaqc/pub?gid=1682085561&single=true&output=csv'
-    };
-    const lineColors   = { 'GPS1': 'blue',   'GPS2': 'green'  };
-    const markerColors = { 'GPS1': 'red',    'GPS2': 'orange' };
+    // CSV URL'ai iš Google Sheets (publikuota kaip CSV)
+    const CSV_GPS1 = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQLeQeN75y60DLI159llAcz32CYiN0gvFuW5hErLrqp_b2OB5uuaDEfB7CaJFoIOmeuh3dpU9ALeaqc/pub?gid=0&single=true&output=csv';
+    const CSV_GPS2 = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQLeQeN75y60DLI159llAcz32CYiN0gvFuW5hErLrqp_b2OB5uuaDEfB7CaJFoIOmeuh3dpU9ALeaqc/pub?gid=1682085561&single=true&output=csv';
 
-    let map, routeLines = {}, markers = {};
+    const MAX_ROWS   = 50;      // imame tik paskutines 50 eilučių
+    const REFRESH_MS = 15000;   // atnaujinimas kas 15 s
 
-    async function loadMapData() {
+    // Inicijuojam žemėlapį
+    const map = L.map('map').setView([0, 0], 2);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    const poly1 = L.polyline([], { color: 'blue' }).addTo(map);
+    const poly2 = L.polyline([], { color: 'green' }).addTo(map);
+
+    // Paverčia CSV tekstą į [lat, lon] masyvą
+    function parseCSV(text) {
+      return text
+        .trim()
+        .split('\n')
+        .slice(1)             // praleidžiam header eilutę
+        .map(row => row.split(','))
+        .map(cols => [parseFloat(cols[1]), parseFloat(cols[2])])
+        .filter(pt => !isNaN(pt[0]) && !isNaN(pt[1]))
+        .slice(-MAX_ROWS);    // tik paskutinės 50
+    }
+
+    // Užklausa CSV ir parse
+    async function fetchCoords(url) {
+      const resp = await fetch(url + '&t=' + Date.now(), { cache: 'no-cache' });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const text = await resp.text();
+      return parseCSV(text);
+    }
+
+    // Atnaujina maršrutus žemėlapyje
+    async function updateRoutes() {
       try {
-        // 1) Fetch & parse each CSV
-        const parsed = await Promise.all(
-          Object.entries(gpsFeeds).map(([gpsName, url]) =>
-            new Promise((resolve, reject) => {
-              Papa.parse(url + '&t=' + Date.now(), {
-                download:      true,
-                header:        true,
-                skipEmptyLines:true,
-                complete: ({ data }) => {
-                  // data is an array of {Timestamp, Latitude, Longitude}
-                  console.log(`${gpsName} parsed ${data.length} rows`);
-                  resolve({ gpsName, data });
-                },
-                error: (err) => reject(err)
-              });
-            })
-          )
-        );
-
-        // 2) Initialize map on first valid point
-        if (!map) {
-          const first = parsed.find(p => p.data.length && !isNaN(parseFloat(p.data[0].Latitude)));
-          if (!first) {
-            console.warn('No valid points yet to initialize map');
-            return;
-          }
-          const lat0 = parseFloat(first.data[0].Latitude),
-                lng0 = parseFloat(first.data[0].Longitude);
-          map = L.map('map').setView([lat0, lng0], 9);
-          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '&copy; OpenStreetMap contributors'
-          }).addTo(map);
-        }
-
-        const allBounds = [];
-
-        // 3) For each feed: clear old layers, then draw
-        parsed.forEach(({ gpsName, data }) => {
-          // clean up
-          if (routeLines[gpsName]) map.removeLayer(routeLines[gpsName]);
-          (markers[gpsName]||[]).forEach(m=>map.removeLayer(m));
-
-          // map raw rows to [lat, lng]
-          const coords = data
-            .map(r => {
-              const lat = parseFloat(r.Latitude),
-                    lng = parseFloat(r.Longitude);
-              return (!isNaN(lat) && !isNaN(lng)) ? [lat, lng] : null;
-            })
-            .filter(c => c);
-
-          // nothing to draw?
-          if (!coords.length) return;
-
-          // if multiple points, draw polyline
-          if (coords.length > 1) {
-            routeLines[gpsName] = L.polyline(coords, {
-              color:   lineColors[gpsName]   || 'black',
-              weight:  4,
-              opacity: 0.7
-            }).addTo(map);
-            allBounds.push(routeLines[gpsName].getBounds());
-          }
-
-          // always draw markers (at least one)
-          markers[gpsName] = coords.map((c, i) =>
-            L.circleMarker(c, {
-              radius:      4,
-              fillColor:   markerColors[gpsName] || 'black',
-              color:       '#000',
-              weight:      1,
-              fillOpacity: 0.8
-            })
-            .addTo(map)
-            .bindTooltip(`${gpsName} taškas ${i+1}`)
-          );
-        });
-
-        // 4) finally, fit map to all lines
-        if (allBounds.length) {
-          const combined = allBounds.reduce((b, bb) => b.extend(bb), L.latLngBounds());
-          map.fitBounds(combined.pad(0.1));
-        }
-      }
-      catch (err) {
-        console.error('Klaida kraunant GPS duomenis:', err);
+        const [c1, c2] = await Promise.all([
+          fetchCoords(CSV_GPS1),
+          fetchCoords(CSV_GPS2)
+        ]);
+        poly1.setLatLngs(c1);
+        poly2.setLatLngs(c2);
+        const all = c1.concat(c2);
+        if (all.length) map.fitBounds(L.latLngBounds(all));
+      } catch (err) {
+        console.error('Klaida kraunant duomenis:', err);
       }
     }
 
-    loadMapData();
-    setInterval(loadMapData, 15000);
+    updateRoutes();
+    setInterval(updateRoutes, REFRESH_MS);
   </script>
+</body>
+</html>
