@@ -3,18 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#ffffff">
-  <link rel="manifest" href="manifest.json">
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-  />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <title>Kelionės maršrutas</title>
+  <title>Kelionės maršrutai</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <style>
     body { margin: 0; font-family: sans-serif; }
     #map { height: 90vh; width: 100%; }
-    header { padding: 1rem; background: #1976d2; color: white; text-align: center; }
+    header { padding: 1rem; background: #1976d2; color: #fff; text-align: center; }
   </style>
 </head>
 <body>
@@ -23,66 +17,66 @@
   </header>
   <div id="map"></div>
 
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
-    // Service Worker (neprivaloma)
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js')
-        .then(reg => console.log('SW registered', reg))
-        .catch(err => console.error('SW registration failed', err));
-    }
-
-    // 1. Nurodom Google Sheets CSV URL’us kiekvienam GPS:
     const gpsFeeds = {
       'GPS1': 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQLeQeN75y60DLI159llAcz32CYiN0gvFuW5hErLrqp_b2OB5uuaDEfB7CaJFoIOmeuh3dpU9ALeaqc/pub?gid=GID1&single=true&output=csv',
       'GPS2': 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQLeQeN75y60DLI159llAcz32CYiN0gvFuW5hErLrqp_b2OB5uuaDEfB7CaJFoIOmeuh3dpU9ALeaqc/pub?gid=GID2&single=true&output=csv'
     };
-
-    // 2. Spalvos linijoms ir žymėms
     const lineColors   = { 'GPS1': 'blue',   'GPS2': 'green'  };
     const markerColors = { 'GPS1': 'red',    'GPS2': 'orange' };
-
     let map;
-    let routeLines = {};   // saugos L.Polyline objektus pagal GPS pavadinimą
-    let markers    = {};   // saugos masyvą L.CircleMarker objektų pagal GPS
+    let routeLines = {};
+    let markers    = {};
 
     async function loadMapData() {
       try {
-        const results = await Promise.all(
+        // 1. Parsisiunčiam visus CSV
+        const rawFeeds = await Promise.all(
           Object.entries(gpsFeeds).map(async ([gpsName, baseUrl]) => {
-            // pridedam cache-busting parametrą
             const url = `${baseUrl}&t=${Date.now()}`;
-            const res = await fetch(url, { cache: 'no-cache' });
-            const text = await res.text();
+            const resp = await fetch(url, { cache: 'no-cache' });
+            const text = await resp.text();
             return { gpsName, text };
           })
         );
 
-        const allBounds = [];
-
-        for (let {gpsName, text} of results) {
+        // 2. Išskaidom į koordinačių masyvus
+        const parsed = rawFeeds.map(({gpsName, text}) => {
           const rows = text.trim().split('\n').slice(1);
           const coords = rows
             .map(r => {
-              const [ts, latStr, lonStr] = r.split(',');
-              const lat = parseFloat(latStr.replace(/"/g,''));
-              const lon = parseFloat(lonStr.replace(/"/g,''));
-              return [lat, lon];
+              const cols = r.split(',');
+              const lat = parseFloat(cols[1]?.replace(/"/g,''));
+              const lon = parseFloat(cols[2]?.replace(/"/g,''));
+              return (!isNaN(lat)&&!isNaN(lon)) ? [lat, lon] : null;
             })
-            .filter(c => !isNaN(c[0]) && !isNaN(c[1]));
+            .filter(c => c);
+          return { gpsName, coords };
+        });
 
-          // Inicijuojam žemėlapį pirmą kartą
-          if (!map && coords.length) {
-            map = L.map('map').setView(coords[0], 9);
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-              attribution: '&copy; OpenStreetMap contributors'
-            }).addTo(map);
+        // 3. Inicijavimas – pirmas ne tuščias coords
+        if (!map) {
+          const first = parsed.find(p => p.coords.length);
+          if (!first) {
+            console.warn('Nėra jokių koordinačių map inicijavimui.');
+            return;
           }
+          map = L.map('map').setView(first.coords[0], 9);
+          L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors'
+          }).addTo(map);
+        }
 
-          // Remove senus sluoksnius
-          if (routeLines[gpsName]) {
-            map.removeLayer(routeLines[gpsName]);
-          }
+        // 4. Braižom kiekvieną GPS
+        const allBounds = [];
+        parsed.forEach(({gpsName, coords}) => {
+          // Išvalom senus sluoksnius
+          if (routeLines[gpsName]) map.removeLayer(routeLines[gpsName]);
           (markers[gpsName] || []).forEach(m => map.removeLayer(m));
+
+          // Jei nėra koordinačių – praleidžiam
+          if (!coords.length) return;
 
           // Nauja polilinija
           routeLines[gpsName] = L.polyline(coords, {
@@ -91,25 +85,25 @@
             opacity:    0.7
           }).addTo(map);
 
-          // Naujos žymės
-          markers[gpsName] = coords.map((c, i) => {
-            return L.circleMarker(c, {
-              radius:     4,
-              fillColor:  markerColors[gpsName] || 'black',
-              color:      '#000',
-              weight:     1,
-              fillOpacity:0.8
+          // Žymės
+          markers[gpsName] = coords.map((c, i) =>
+            L.circleMarker(c, {
+              radius:      4,
+              fillColor:   markerColors[gpsName] || 'black',
+              color:       '#000',
+              weight:      1,
+              fillOpacity: 0.8
             })
             .addTo(map)
-            .bindTooltip(`${gpsName} taškas ${i+1}`);
-          });
+            .bindTooltip(`${gpsName} taškas ${i+1}`)
+          );
 
           allBounds.push(routeLines[gpsName].getBounds());
-        }
+        });
 
-        // Pradėtam vaizdą, apimant visus GPS
+        // 5. Centrinti visus sluoksnius
         if (allBounds.length) {
-          const combined = allBounds.reduce((acc, b) => acc.extend(b), L.latLngBounds());
+          const combined = allBounds.reduce((b, bb) => b.extend(bb), L.latLngBounds());
           map.fitBounds(combined.pad(0.1));
         }
 
@@ -118,7 +112,6 @@
       }
     }
 
-    // Pirmas užkrovimas ir periodinis atnaujinimas
     loadMapData();
     setInterval(loadMapData, 15000);
   </script>
